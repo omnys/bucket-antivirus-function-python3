@@ -47,6 +47,7 @@ SNS_ENDPOINT = os.getenv("SNS_ENDPOINT", None)
 S3_ENDPOINT = os.getenv("S3_ENDPOINT", None)
 LAMBDA_ENDPOINT = os.getenv("LAMBDA_ENDPOINT", None)
 
+AV_CHECK_FOR_FILE_BEFORE_TAGGING = os.getenv("AV_CHECK_FOR_FILE_BEFORE_TAGGING", False)
 
 def create_dir(path):
     if not os.path.exists(path):

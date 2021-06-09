@@ -20,6 +20,7 @@ from urllib.parse import unquote_plus
 from distutils.util import strtobool
 
 import boto3
+import botocore.exceptions
 
 import clamav
 import metrics
@@ -41,7 +42,7 @@ from common import SNS_ENDPOINT
 from common import S3_ENDPOINT
 from common import create_dir
 from common import get_timestamp
-
+from common import AV_CHECK_FOR_FILE_BEFORE_TAGGING
 
 def event_object(event, event_source="s3"):
 
@@ -78,6 +79,39 @@ def event_object(event, event_source="s3"):
     s3 = boto3.resource("s3", endpoint_url=S3_ENDPOINT)
     return s3.Object(bucket_name, key_name)
 
+def head_object(event, event_source="s3"):
+
+    # SNS events are slightly different
+    if event_source.upper() == "SNS":
+        event = json.loads(event["Records"][0]["Sns"]["Message"])
+
+    # Break down the record
+    records = event["Records"]
+    if len(records) == 0:
+        raise Exception("No records found in event!")
+    record = records[0]
+
+    s3_obj = record["s3"]
+
+    # Get the bucket name
+    if "bucket" not in s3_obj:
+        raise Exception("No bucket found in event!")
+    bucket_name = s3_obj["bucket"].get("name", None)
+
+    # Get the key name
+    if "object" not in s3_obj:
+        raise Exception("No key found in event!")
+    key_name = s3_obj["object"].get("key", None)
+
+    if key_name:
+        key_name = unquote_plus(key_name)
+
+    # Ensure both bucket and key exist
+    if (not bucket_name) or (not key_name):
+        raise Exception("Unable to retrieve object from event.\n{}".format(event))
+
+    client = boto3.client("s3")
+    return client.head_object(Bucket=bucket_name,Key=key_name)
 
 def verify_s3_object_version(s3, s3_object):
     # validate that we only process the original version of a file, if asked to do so
@@ -245,7 +279,18 @@ def lambda_handler(event, context):
     # Set the properties on the object with the scan results
     if "AV_UPDATE_METADATA" in os.environ:
         set_av_metadata(s3_object, scan_result, scan_signature, result_time)
-    set_av_tags(s3_client, s3_object, scan_result, scan_signature, result_time)
+
+    # handle case when an object is removed before the scan is completed
+    tag_obj = True
+    if AV_CHECK_FOR_FILE_BEFORE_TAGGING:
+        try:
+            head_object(event, event_source=EVENT_SOURCE)
+        except botocore.exceptions.ClientError as e:
+            if e.response['Error']['Code'] == "404":
+                print("S3 object %s not found, skip tagging" % s3_object.key)
+                tag_obj = False
+    if tag_obj:
+    	set_av_tags(s3_client, s3_object, scan_result, scan_signature, result_time)
 
     # Publish the scan results
     if AV_STATUS_SNS_ARN not in [None, ""]:
